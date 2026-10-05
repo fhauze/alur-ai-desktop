@@ -1,0 +1,683 @@
+openapi: "3.1.0"
+
+# =============================================================================
+# ServiceIQ — AI-Powered Enterprise Service Intelligence Platform
+# OpenAPI Specification
+#
+# Source of truth:
+#   Route:        backend/api/service_orders.py
+#   Domain model: backend/domain/AIServiceOrder.py
+#   Auth guard:   backend/auth/authorization.py
+#   Principal:    backend/auth/principal.py
+#   Data source:  public.ai_service_order_summary (read-only semantic view)
+#
+# Validation:
+#   openapi-generator validate -i docs/api/openapi.yaml
+#   swagger-cli validate docs/api/openapi.yaml
+# =============================================================================
+
+info:
+  title: ServiceIQ AI API
+  version: "1.0.0"
+  description: |
+    **ServiceIQ** is an AI-Powered Enterprise Service Intelligence Platform
+    for metrological service orders (calibration and field inspection).
+
+    ## Service Tracks
+
+    All service order data is sourced exclusively from the
+    `public.ai_service_order_summary` semantic view, which unifies two
+    parallel instrument service tracks:
+
+    | Track  | Description |
+    |--------|-------------|
+    | `UUT`  | *Unit Under Test* — calibration instruments, laboratory-based |
+    | `UTTP` | *Ukuran Takar Timbang Perlengkapan* — weighing/measuring instruments, field inspection |
+
+    ## Authentication
+
+    All endpoints require a valid **Bearer JWT** in the `Authorization` header.
+    Tokens are issued by the ServiceIQ identity provider and carry role and
+    scope claims used for server-side authorisation.
+
+    ## Authorisation
+
+    Access control is enforced **server-side** against the fetched database
+    record, not against the URL parameter. This prevents Insecure Direct
+    Object Reference (IDOR): a caller cannot access another party's order
+    by guessing a valid `order_number`.
+
+    | Role       | Access condition |
+    |------------|-----------------|
+    | `customer` | `token.customer_id == order.customer_id` |
+    | `staff`    | `order.customer_id ∈ token.customer_scope` |
+    | `manager`  | `order.laboratory_id ∈ token.lab_scope` |
+
+    Denied and not-found responses are **intentionally identical** in message
+    to prevent order-existence enumeration.
+
+  contact:
+    name: ServiceIQ Platform Team
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.serviceiq.example.com
+    description: Production
+  - url: https://staging-api.serviceiq.example.com
+    description: Staging
+  - url: http://localhost:8000
+    description: Local development
+
+# =============================================================================
+# Security scheme
+# =============================================================================
+
+components:
+
+  securitySchemes:
+
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT issued by the ServiceIQ identity provider.
+
+        **Required claims:**
+
+        | Claim            | Type      | Required for   | Description |
+        |------------------|-----------|----------------|-------------|
+        | `sub`            | string    | all roles      | Subject — internal user identifier |
+        | `role`           | string    | all roles      | One of: `customer`, `staff`, `manager` |
+        | `customer_id`    | integer   | `customer`     | The `users_customers.id` the caller owns |
+        | `customer_scope` | integer[] | `staff`        | Set of `customer_id` values the staff member may act on behalf of |
+        | `lab_scope`      | integer[] | `manager`      | Set of `laboratory_id` values within the manager's organisational scope |
+        | `exp`            | integer   | all roles      | Token expiry (Unix timestamp) |
+        | `iat`            | integer   | all roles      | Issued-at (Unix timestamp) |
+        | `iss`            | string    | all roles      | Issuer URL — verified server-side |
+
+        **Token examples by role:**
+
+        Customer:
+        ```json
+        {
+          "sub": "usr_1",
+          "role": "customer",
+          "customer_id": 100,
+          "exp": 9999999999,
+          "iat": 1700000000,
+          "iss": "https://auth.serviceiq.example.com"
+        }
+        ```
+
+        Staff:
+        ```json
+        {
+          "sub": "usr_10",
+          "role": "staff",
+          "customer_scope": [100, 200, 300],
+          "exp": 9999999999,
+          "iat": 1700000000,
+          "iss": "https://auth.serviceiq.example.com"
+        }
+        ```
+
+        Manager:
+        ```json
+        {
+          "sub": "usr_20",
+          "role": "manager",
+          "lab_scope": [5, 6, 7],
+          "exp": 9999999999,
+          "iat": 1700000000,
+          "iss": "https://auth.serviceiq.example.com"
+        }
+        ```
+
+  # ===========================================================================
+  # Reusable schemas
+  # ===========================================================================
+
+  schemas:
+
+    # ── Enumerations ──────────────────────────────────────────────────────────
+
+    OrderStatus:
+      type: string
+      description: |
+        Normalised lifecycle status of the service order, derived from the
+        underlying integer status columns in the database.
+
+        Derivation priority (first match wins):
+
+        | Priority | Condition | Value |
+        |----------|-----------|-------|
+        | 1 | `cancel_at IS NOT NULL` or `is_nonaktif = TRUE` (UTTP) | `cancelled` |
+        | 2 | `pending_status > 0` | `pending` |
+        | 3 | `is_finish = 1` | `completed` |
+        | 4 | `stat_sertifikat > 0` | `certified` |
+        | 5 | `stat_service_order > 0` | `in_progress` |
+        | 6 | (default) | `new` |
+      enum:
+        - new
+        - in_progress
+        - pending
+        - certified
+        - completed
+        - cancelled
+
+    InspectionStatus:
+      type: string
+      description: |
+        Aggregated result of the order-level inspection checklist.
+        Computed via a correlated subquery against `service_order_inspections`
+        (UUT) or `service_order_uttp_inspections` (UTTP).
+
+        | Value | Condition |
+        |-------|-----------|
+        | `no_inspection` | No checklist rows exist for this order |
+        | `passed` | All checklist items have `is_accepted = TRUE` |
+        | `failed` | At least one item has `is_accepted = FALSE` |
+        | `partial` | Mix of `TRUE` and `NULL` (some not yet evaluated) |
+      enum:
+        - no_inspection
+        - passed
+        - failed
+        - partial
+
+    SLAStatus:
+      type: string
+      description: |
+        SLA compliance state evaluated at the moment of the request
+        (`CURRENT_DATE`).
+
+        **Formula:** `sla_deadline = received_date + laboratory.sla_day`
+
+        No `sla_deadline` column exists in the database; the deadline is
+        always computed by the semantic view.
+
+        | Value | Condition |
+        |-------|-----------|
+        | `no_sla` | `received_date` or `sla_day` is `NULL` — deadline cannot be computed |
+        | `on_track` | Order open, more than 2 days before deadline |
+        | `at_risk` | Order open, within 2 days of deadline |
+        | `overdue` | Order open, deadline has passed |
+        | `closed` | Order is completed or cancelled; SLA no longer applies |
+      enum:
+        - no_sla
+        - on_track
+        - at_risk
+        - overdue
+        - closed
+
+    # ── Nested objects ────────────────────────────────────────────────────────
+
+    CustomerSummary:
+      type: object
+      description: |
+        Identifying information for the customer who submitted the service
+        request. `null` when the order has no resolvable `requestor_id`.
+
+        **Sensitive fields suppressed:** `email`, `phone`, `ktp`, `npwp`,
+        `nib`, `alamat`, `password` — none of these are included.
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          description: Internal customer ID (`users_customers.id`).
+          example: 100
+        name:
+          type:
+            - string
+            - "null"
+          description: |
+            Full name of the customer (`users_customers.full_name`).
+            `null` when the name is not available.
+          example: "PT Maju Bersama"
+
+    LaboratorySummary:
+      type: object
+      description: |
+        Identifying information for the laboratory assigned to the order.
+        `null` when no laboratory has been assigned (`laboratory_id IS NULL`).
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          description: Internal laboratory ID (`master_laboratory.id`).
+          example: 5
+        name:
+          type:
+            - string
+            - "null"
+          description: |
+            Human-readable laboratory name (`master_laboratory.nama_lab`).
+            `null` when the lab record has no name.
+          example: "Lab Massa dan Volume"
+
+    # ── Success response ──────────────────────────────────────────────────────
+
+    ServiceOrderResponse:
+      type: object
+      description: |
+        Filtered representation of a service order from the
+        `public.ai_service_order_summary` semantic view.
+
+        **Internal fields deliberately excluded from this response:**
+        `service_order_id`, `track`, `service_request_id`, `sla_deadline`,
+        and any raw numeric status codes.
+      required:
+        - order_number
+        - customer
+        - service_type
+        - laboratory
+        - order_status
+        - inspection_status
+        - sla_status
+      properties:
+        order_number:
+          type:
+            - string
+            - "null"
+          description: |
+            Human-readable order number from the service request
+            (`service_requests.no_order` for UUT,
+            `service_request_uttps.no_order` for UTTP).
+            `null` when the parent service request is missing or the
+            field was not yet assigned.
+          example: "ORD-2024-001"
+        customer:
+          oneOf:
+            - $ref: "#/components/schemas/CustomerSummary"
+            - type: "null"
+          description: |
+            Customer who submitted the service request.
+            `null` when `requestor_id` has no matching `users_customers` row.
+        service_type:
+          type:
+            - string
+            - "null"
+          description: |
+            Human-readable service type label
+            (`master_service_types.service_type`).
+            `null` when `service_type_id` has no match in the reference table.
+          example: "Kalibrasi"
+        laboratory:
+          oneOf:
+            - $ref: "#/components/schemas/LaboratorySummary"
+            - type: "null"
+          description: |
+            Laboratory assigned to the order.
+            `null` when no laboratory has been assigned.
+        order_status:
+          $ref: "#/components/schemas/OrderStatus"
+        inspection_status:
+          $ref: "#/components/schemas/InspectionStatus"
+        sla_status:
+          $ref: "#/components/schemas/SLAStatus"
+
+    # ── Error response ────────────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      description: Standard error envelope returned for all non-2xx responses.
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error description.
+          example: "Authentication required."
+
+# =============================================================================
+# Global security — all endpoints require Bearer authentication by default.
+# Override per-operation if an endpoint does not require auth.
+# =============================================================================
+
+security:
+  - BearerAuth: []
+
+# =============================================================================
+# Paths
+# =============================================================================
+
+paths:
+
+  /api/ai/service-orders/{order_number}:
+
+    get:
+      operationId: getServiceOrderByNumber
+      summary: Get a service order by order number
+      description: |
+        Retrieves a single service order from the `public.ai_service_order_summary`
+        semantic view, identified by its human-readable `order_number`.
+
+        ## Data Source
+
+        This endpoint queries **only** the read-only semantic view
+        `public.ai_service_order_summary`. It never accesses raw transactional
+        tables (`service_orders`, `service_requests`, etc.) directly.
+
+        ## Authorisation
+
+        Access is enforced **server-side** against the fetched record's
+        `customer_id` and `laboratory_id` fields — not against the
+        `order_number` URL parameter. This prevents IDOR attacks.
+
+        | Role | Granted when |
+        |------|-------------|
+        | `customer` | `token.customer_id` equals the order's `customer_id` |
+        | `staff` | The order's `customer_id` is in `token.customer_scope` |
+        | `manager` | The order's `laboratory_id` is in `token.lab_scope` |
+
+        **Important:** The 403 and 404 responses carry the **same message**
+        (`"Order not found or access denied."`). This is intentional — it
+        prevents an unauthenticated caller from confirming whether an
+        `order_number` exists by observing the difference between the two
+        status codes.
+
+        ## Order Number Validation
+
+        The `order_number` path parameter is validated server-side before
+        any database query is issued:
+
+        - Must be 1–100 printable ASCII characters (`\x20`–`\x7E`).
+        - No SQL or special characters are ever interpolated into queries
+          — the value is always passed as a parameterised database argument.
+
+      tags:
+        - Service Orders
+
+      security:
+        - BearerAuth: []
+
+      parameters:
+        - name: order_number
+          in: path
+          required: true
+          description: |
+            The human-readable order number of the service order to retrieve.
+
+            **Format:** 1–100 printable ASCII characters. Must not be empty.
+
+            Examples: `ORD-2024-001`, `VER-2025-0042`, `KAL/2024/00123`
+
+            The value is validated against the pattern `[\x20-\x7E]{1,100}`
+            before any database access occurs.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+            pattern: '^[\x20-\x7E]{1,100}$'
+            example: "ORD-2024-001"
+
+      responses:
+
+        "200":
+          description: |
+            Order found and the caller is authorised to view it.
+            Returns the filtered order summary.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceOrderResponse"
+              examples:
+
+                customer_owned_uut_order:
+                  summary: "UUT calibration order — customer view"
+                  description: |
+                    A calibration (UUT track) order returned to the owning
+                    customer. The order is in progress, inspection has passed,
+                    and SLA is on track.
+                  value:
+                    order_number: "ORD-2024-001"
+                    customer:
+                      id: 100
+                      name: "PT Maju Bersama"
+                    service_type: "Kalibrasi"
+                    laboratory:
+                      id: 5
+                      name: "Lab Massa dan Volume"
+                    order_status: "in_progress"
+                    inspection_status: "passed"
+                    sla_status: "on_track"
+
+                staff_accessed_uttp_order:
+                  summary: "UTTP field inspection order — staff view"
+                  description: |
+                    A field inspection (UTTP track) order accessed by a staff
+                    member whose `customer_scope` includes the order's customer.
+                    The order is completed and inspection passed.
+                  value:
+                    order_number: "VER-2024-0042"
+                    customer:
+                      id: 200
+                      name: "CV Timbang Jaya"
+                    service_type: "Verifikasi"
+                    laboratory:
+                      id: 6
+                      name: "Lab UTTP Wilayah II"
+                    order_status: "completed"
+                    inspection_status: "passed"
+                    sla_status: "closed"
+
+                manager_overdue_order:
+                  summary: "Overdue order — manager view"
+                  description: |
+                    An order within the manager's laboratory scope that has
+                    exceeded its SLA deadline and has a failed inspection item.
+                  value:
+                    order_number: "KAL-2023-0988"
+                    customer:
+                      id: 150
+                      name: "Pabrik Otomotif Nusantara"
+                    service_type: "Kalibrasi"
+                    laboratory:
+                      id: 5
+                      name: "Lab Massa dan Volume"
+                    order_status: "in_progress"
+                    inspection_status: "failed"
+                    sla_status: "overdue"
+
+                order_no_laboratory:
+                  summary: "Order with no assigned laboratory"
+                  description: |
+                    An order that has not yet been assigned to a laboratory.
+                    The `laboratory` field is `null` and `sla_status` is
+                    `no_sla` because the SLA deadline cannot be computed
+                    without a lab assignment.
+                  value:
+                    order_number: "ORD-2024-088"
+                    customer:
+                      id: 100
+                      name: "PT Maju Bersama"
+                    service_type: "Kalibrasi"
+                    laboratory: null
+                    order_status: "new"
+                    inspection_status: "no_inspection"
+                    sla_status: "no_sla"
+
+                order_no_customer:
+                  summary: "Order with unresolved customer"
+                  description: |
+                    An order whose `requestor_id` has no matching row in
+                    `users_customers` (orphaned reference — possible due to
+                    the absence of FK constraints). The `customer` field is
+                    `null`. Only a `manager` or `staff` can access such an
+                    order; a `customer` principal will receive 403 because
+                    the guard denies access when `customer_id` is `null`.
+                  value:
+                    order_number: "ORD-2024-099"
+                    customer: null
+                    service_type: "Kalibrasi"
+                    laboratory:
+                      id: 5
+                      name: "Lab Massa dan Volume"
+                    order_status: "new"
+                    inspection_status: "no_inspection"
+                    sla_status: "no_sla"
+
+                pending_order:
+                  summary: "Order on hold (pending)"
+                  description: |
+                    An order that is currently on hold pending additional
+                    information or action.
+                  value:
+                    order_number: "ORD-2024-102"
+                    customer:
+                      id: 100
+                      name: "PT Maju Bersama"
+                    service_type: "Verifikasi"
+                    laboratory:
+                      id: 7
+                      name: "Lab Tekanan"
+                    order_status: "pending"
+                    inspection_status: "partial"
+                    sla_status: "at_risk"
+
+        "400":
+          description: |
+            The `order_number` path parameter failed format validation.
+
+            This response is returned **before** any database query is issued
+            or any authentication check is performed — it is a pure input
+            validation failure.
+
+            Conditions that trigger a 400:
+            - Length exceeds 100 characters
+            - Contains non-printable ASCII characters (control characters)
+            - Empty string (though Starlette will route this to 404 before
+              the handler is reached)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                too_long:
+                  summary: order_number exceeds 100 characters
+                  value:
+                    error: "Invalid order number format."
+                control_chars:
+                  summary: order_number contains control characters
+                  value:
+                    error: "Invalid order number format."
+
+        "401":
+          description: |
+            No valid `Authorization` header was present on the request, or
+            the Bearer token could not be decoded into a valid Principal.
+
+            **Common causes:**
+            - Missing `Authorization` header entirely
+            - Header does not begin with `Bearer `
+            - Token is malformed (not valid base64url JSON / JWT)
+            - Token signature verification failed (production)
+            - Token has expired (`exp` claim in the past)
+            - Token `iss` does not match the expected issuer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missing_header:
+                  summary: No Authorization header
+                  value:
+                    error: "Authentication required."
+                invalid_token:
+                  summary: Malformed or expired token
+                  value:
+                    error: "Authentication required."
+
+        "403":
+          description: |
+            The caller is authenticated but is **not authorised** to access
+            this order.
+
+            **Intentionally identical message to 404** — this prevents an
+            attacker from confirming whether an `order_number` exists by
+            comparing 403 vs 404 responses (order-existence enumeration).
+
+            **Authorisation failure scenarios:**
+
+            | Scenario | Details |
+            |----------|---------|
+            | Customer accessing another customer's order | `token.customer_id ≠ order.customer_id` |
+            | Staff accessing outside their customer scope | `order.customer_id ∉ token.customer_scope` |
+            | Manager accessing outside their lab scope | `order.laboratory_id ∉ token.lab_scope` |
+            | Any role — order has no customer association | `order.customer_id IS NULL` (customer and staff only) |
+            | Any role — order has no lab assignment | `order.laboratory_id IS NULL` (manager only) |
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                access_denied:
+                  summary: Order exists but access is denied
+                  description: |
+                    This message is identical to the 404 response to prevent
+                    order-existence enumeration.
+                  value:
+                    error: "Order not found or access denied."
+
+        "404":
+          description: |
+            No order matching the given `order_number` was found in the
+            `public.ai_service_order_summary` view.
+
+            **Intentionally identical message to 403** — this prevents
+            order-existence enumeration by unauthorized callers.
+
+            Note: a soft-deleted parent service request is treated as
+            not found (the `deleted_at IS NULL` filter in the view excludes
+            those rows).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                not_found:
+                  summary: Order does not exist
+                  value:
+                    error: "Order not found or access denied."
+
+        "500":
+          description: |
+            An unexpected server-side error occurred. The response body does
+            not include internal details (stack traces, query text, etc.).
+
+            Clients should treat this as transient and may retry with
+            exponential backoff.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                internal_error:
+                  summary: Unexpected server error
+                  value:
+                    error: "Internal server error."
+
+# =============================================================================
+# Tags
+# =============================================================================
+
+tags:
+  - name: Service Orders
+    description: |
+      Read-only intelligence endpoints for service order data.
+
+      All endpoints in this group:
+      - Query only the `public.ai_service_order_summary` semantic view.
+      - Never construct SQL from request input.
+      - Enforce server-side authorisation against fetched records.
+      - Do not expose raw transactional table data.

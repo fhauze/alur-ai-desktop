@@ -1,0 +1,52 @@
+{
+  "name": "get_service_order_status",
+  "display_name": "Get Service Order Status",
+  "description": "Retrieve the authorised status of a service order from ServiceIQ.",
+  "documentation": "docs/langflow/service-order-tool.md",
+  "icon": "ClipboardList",
+  "category": "ServiceIQ",
+  "version": "1.0.0",
+  "python_path": "get_service_order_status.GetServiceOrderStatusComponent",
+  "langflow_min_version": "1.12.0",
+  "inputs": [
+    {
+      "name": "order_number",
+      "display_name": "Order Number",
+      "type": "MessageTextInput",
+      "required": true,
+      "tool_mode": true,
+      "info": "The human-readable service order number to look up. Example: ORD-2024-001."
+    },
+    {
+      "name": "api_base_url",
+      "display_name": "API Base URL",
+      "type": "StrInput",
+      "required": true,
+      "advanced": true,
+      "default": "https://api.serviceiq.example.com",
+      "info": "Base URL of the ServiceIQ AI API."
+    },
+    {
+      "name": "bearer_token",
+      "display_name": "Bearer Token",
+      "type": "SecretStrInput",
+      "required": true,
+      "info": "JWT Bearer token. Must be stored in the Langflow secret store."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "service_order",
+      "display_name": "Service Order",
+      "type": "Data",
+      "method": "get_service_order_status"
+    }
+  ],
+  "security_notes": [
+    "The bearer_token field uses SecretStrInput and is never stored in flow JSON.",
+    "The component never accesses the database directly.",
+    "The order_number is the only value taken from LLM/flow context.",
+    "Server-side authorisation is enforced by the backend; this component does not bypass it.",
+    "All errors are returned as structured Data objects — no raw exceptions reach the LLM."
+  ]
+}

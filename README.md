@@ -1,376 +1,352 @@
-# AI Customer Service Agent
+# ServiceIQ — AI-Powered Enterprise Service Intelligence Platform
 
-AI Customer Service Agent adalah solusi **AI Agent berbasis Langflow** yang membantu menjawab pertanyaan customer menggunakan data aktual dari database aplikasi. Model AI menggunakan **Gemini Flash**, sedangkan Langflow berperan sebagai orkestrator antara customer, model AI, dan database perusahaan.
-
-## 1. Arsitektur
-
-```text
-Customer
-   │
-   ▼
-Aplikasi / Chat UI
-   │
-   ▼
-Langflow
-   │
-   ├── Gemini Flash
-   │
-   └── Database Tool
-          │
-          ▼
-    Application Database
-```
-
-**Prinsip utama:** database aplikasi menjadi sumber informasi utama. AI tidak mengarang harga, stok, pesanan, atau informasi perusahaan yang tidak tersedia di database.
+Platform kecerdasan layanan berbasis AI untuk metrologi laboratorium.  
+Agent AI dapat menjawab pertanyaan tentang status order, inspeksi, SLA, dan laboratorium berdasarkan data nyata dari database.
 
 ---
 
-## 2. Teknologi
+## Arsitektur Singkat
 
-* **Langflow** — AI Agent & workflow orchestration
-* **Gemini Flash** — LLM/reasoning engine
-* **PostgreSQL/MySQL** — database aplikasi
-* **REST API** — integrasi aplikasi dengan Langflow
-* **RAG/Vector Database** — opsional untuk FAQ dan dokumen perusahaan
+```
+Pengguna
+   │
+   ▼
+Langflow (http://localhost:7860)        ← antarmuka percakapan AI
+   │  Agent: gemini-3.6-flash
+   │  Tools: 7 ServiceIQ tools
+   ▼
+Backend API (http://localhost:8000)     ← autentikasi & otorisasi
+   │  GET /api/ai/service-orders/{order_number}
+   ▼
+PostgreSQL — database siks_n_prd        ← data nyata
+   │  VIEW: ai_service_order_summary
+   └─ service_orders, users_customers, master_laboratory, ...
+```
 
 ---
 
-## 3. Prasyarat
+## Prasyarat
 
-Pastikan sudah tersedia:
+| Kebutuhan | Versi minimal | Cara cek |
+|-----------|---------------|----------|
+| Python | 3.11+ | `python3 --version` |
+| PostgreSQL | 14+ | `psql --version` |
+| `uv` (package manager) | terbaru | `uv --version` |
+| Langflow | 1.12+ | sudah berjalan di `localhost:7860` |
+| Google API Key | — | [ai.google.dev](https://ai.google.dev/) |
 
-```text
-Docker
-Database aplikasi
-Gemini API Key
-Langflow
-```
+---
 
-Jika menggunakan Docker, jalankan Langflow:
+## Langkah Persiapan
+
+### 1. Clone / masuk ke direktori project
 
 ```bash
-docker run -p 7860:7860 langflowai/langflow:latest
-```
-
-Kemudian buka:
-
-```text
-http://localhost:7860
+cd /Users/fauzgabriel/development/alur-ai-desktop
 ```
 
 ---
 
-## 4. Siapkan Database
+### 2. Buat virtual environment & install dependensi
 
-Buat user database khusus untuk AI dengan hak akses **read-only**.
+#### A. Root `.venv` (digunakan saat menjalankan backend langsung)
 
-Contoh PostgreSQL:
-
-```sql
-CREATE USER ai_readonly WITH PASSWORD 'PASSWORD_KUAT';
-
-GRANT CONNECT ON DATABASE nama_database TO ai_readonly;
-GRANT USAGE ON SCHEMA public TO ai_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO ai_readonly;
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install starlette asyncpg uvicorn
 ```
 
-Disarankan membuat database view khusus AI:
+#### B. Backend `.venv` (digunakan untuk tests)
 
-```sql
-CREATE VIEW ai_products AS
-SELECT
-    id,
-    name,
-    description,
-    price,
-    stock,
-    status
-FROM products
-WHERE status = 'active';
-```
-
-Dengan demikian AI hanya membaca data yang memang diperbolehkan.
-
----
-
-## 5. Hubungkan Database ke Langflow
-
-Buat Flow baru di Langflow.
-
-Tambahkan:
-
-```text
-Chat Input
-    │
-    ▼
-Agent
-    │
-    ▼
-Chat Output
-```
-
-Kemudian tambahkan **SQL Database** sebagai Tool.
-
-Contoh PostgreSQL:
-
-```text
-postgresql://ai_readonly:PASSWORD@localhost:5432/nama_database
-```
-
-Jika Langflow berjalan di Docker sedangkan database berada di host:
-
-```text
-postgresql://ai_readonly:PASSWORD@host.docker.internal:5432/nama_database
-```
-
-Aktifkan **Tool Mode** pada SQL Database dan hubungkan ke Agent.
-
----
-
-## 6. Hubungkan Gemini Flash
-
-Pada Agent pilih model Gemini dan masukkan Gemini API Key.
-
-Struktur:
-
-```text
-Gemini Flash
-     │
-     ▼
-   Agent
-     │
-     │ Tools
-     ▼
-SQL Database
-```
-
-Gemini berfungsi sebagai otak/reasoning. Gemini tidak diberikan akses langsung ke database. Agent menggunakan SQL Database Tool untuk mengambil data.
-
----
-
-## 7. System Prompt
-
-Gunakan aturan dasar berikut pada Agent:
-
-```text
-Anda adalah AI Customer Service perusahaan.
-
-Tugas Anda adalah membantu customer menjawab pertanyaan
-mengenai produk, harga, stok, pesanan, promosi, dan informasi
-perusahaan.
-
-ATURAN:
-1. Gunakan database sebagai sumber utama untuk data perusahaan.
-2. Jangan mengarang harga, stok, produk, atau status pesanan.
-3. Gunakan database tool jika pertanyaan membutuhkan data aktual.
-4. Jika data tidak ditemukan, katakan bahwa data tidak tersedia.
-5. Jangan menampilkan SQL kepada customer.
-6. Jangan melakukan INSERT, UPDATE, DELETE, atau DROP.
-7. Hanya gunakan operasi READ/SELECT.
-8. Jangan memberikan data customer lain.
-9. Jawab menggunakan Bahasa Indonesia yang ramah dan profesional.
-10. Gunakan knowledge base perusahaan jika tersedia.
+```bash
+cd backend
+uv sync
+cd ..
 ```
 
 ---
 
-## 8. Pengujian
+### 3. Konfigurasi environment database
 
-Jalankan Flow dan coba pertanyaan:
+Buat file `.env` di root project:
 
-```text
-Apa saja produk yang tersedia?
+```bash
+cp .env.example .env
 ```
 
-```text
-Berapa harga Kopi Arabika 250g?
+Isi `.env` sesuai konfigurasi PostgreSQL lokal:
+
+```env
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=siks_n_prd
+DB_USER=fauzgabriel
+DB_PASSWORD=
 ```
 
-```text
-Apakah produk X masih tersedia?
+> **Catatan:** `DB_PASSWORD` boleh kosong jika user PostgreSQL tidak memiliki password (konfigurasi lokal default).
+
+---
+
+### 4. Terapkan semantic view ke database
+
+View ini adalah satu-satunya jalur baca data yang digunakan AI layer.
+
+```bash
+psql -h localhost -p 5432 -U fauzgabriel -d siks_n_prd \
+  -f database/views/ai_service_order_summary.sql
 ```
 
-```text
-Bagaimana status pesanan saya?
-```
+Verifikasi view berhasil dibuat:
 
-Agent seharusnya:
-
-```text
-Customer
-   ↓
-Gemini
-   ↓
-Memahami pertanyaan
-   ↓
-Memanggil SQL Tool
-   ↓
-Database
-   ↓
-Data aktual
-   ↓
-Gemini
-   ↓
-Jawaban customer
+```bash
+psql -h localhost -p 5432 -U fauzgabriel -d siks_n_prd \
+  -c "SELECT order_number, order_status, customer_name FROM ai_service_order_summary LIMIT 3;"
 ```
 
 ---
 
-## 9. Integrasi dengan Aplikasi
+### 5. Konfigurasi Langflow Global Variables
 
-Untuk production, jangan expose Langflow langsung ke customer.
+Buka Langflow UI → **Settings → Global Variables**, lalu tambahkan dua variabel berikut:
 
-Gunakan backend aplikasi sebagai gateway:
+| Nama | Tipe | Nilai |
+|------|------|-------|
+| `GOOGLE_API_KEY` | Credential | API key Google Generative AI Anda |
+| `SERVICEIQ_BEARER_TOKEN` | Credential | Token dari langkah di bawah |
 
-```text
-Customer
-   │
-   ▼
-Frontend / Mobile
-   │
-   ▼
-Backend API
-   │
-   ▼
-Langflow API
-   │
-   ▼
-AI Agent
-   │
-   ├── Gemini Flash
-   └── Database Tool
+**Generate `SERVICEIQ_BEARER_TOKEN`:**
+
+```bash
+python3 -c "
+import base64, json
+d = {'user_id': 1, 'role': 'manager', 'lab_scope': list(range(1, 25))}
+print(base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b'=').decode())
+"
 ```
 
-Contoh request:
+Salin output tersebut sebagai nilai `SERVICEIQ_BEARER_TOKEN`.
 
-```http
-POST /api/ai/chat
-Authorization: Bearer <access_token>
-Content-Type: application/json
+> ⚠️ Token ini adalah **stub development** — tidak menggunakan kriptografi nyata.  
+> Ganti dengan JWT yang sesungguhnya sebelum deploy ke production.
+
+---
+
+### 6. Pastikan flow ServiceIQ sudah ada di Langflow
+
+Flow sudah terkonfigurasi dengan ID:
+
 ```
+975f52f6-7883-4543-803c-45bfb9860e72
+```
+
+Jika flow belum ada atau perlu diperbarui, jalankan script patch:
+
+```bash
+# Ganti LLM dari Ollama ke Gemini dan fix tool endpoints
+python3 langflow/patch_flow_gemini_v2.py
+
+# Fix endpoint semua tool ke /api/ai/service-orders/{order_number}
+python3 langflow/fix_tool_endpoints.py
+```
+
+---
+
+## Menjalankan Backend
+
+```bash
+cd backend/api
+DB_HOST=localhost DB_PORT=5432 DB_NAME=siks_n_prd DB_USER=fauzgabriel \
+  ../../.venv/bin/uvicorn app:app --reload
+```
+
+Verifikasi berjalan:
+
+```bash
+curl http://127.0.0.1:8000/health
+# → {"status":"ok"}
+```
+
+Backend berjalan di: **http://127.0.0.1:8000**
+
+---
+
+## Menjalankan Tes
+
+```bash
+cd backend
+DB_HOST=localhost DB_PORT=5432 DB_NAME=siks_n_prd DB_USER=fauzgabriel \
+  uv run pytest tests/ -q
+# → 35 passed
+```
+
+---
+
+## Uji Backend Secara Langsung
+
+Generate token manager terlebih dahulu:
+
+```bash
+TOKEN=$(python3 -c "
+import base64, json
+d = {'user_id': 1, 'role': 'manager', 'lab_scope': list(range(1, 25))}
+print(base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b'=').decode())
+")
+```
+
+Uji endpoint:
+
+```bash
+# Order yang ada → 200
+curl -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8000/api/ai/service-orders/V-6747-09-000
+
+# Order tidak ada → 404
+curl -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8000/api/ai/service-orders/ORD-TIDAK-ADA
+
+# Tanpa token → 401
+curl http://127.0.0.1:8000/api/ai/service-orders/V-6747-09-000
+```
+
+Contoh respons sukses:
 
 ```json
 {
-  "message": "Apakah Kopi Arabika 250g masih tersedia?"
+  "order_number": "V-6747-09-000",
+  "customer": { "id": 61, "name": "Reza Hendrawan" },
+  "service_type": "Verifikasi",
+  "laboratory": { "id": 2, "name": "VOLUME" },
+  "order_status": "new",
+  "inspection_status": "no_inspection",
+  "sla_status": "overdue"
 }
 ```
 
-Backend kemudian meneruskan request ke Flow Langflow.
+---
+
+## Uji End-to-End via Langflow API
+
+Pastikan **backend sudah berjalan** di port 8000, kemudian:
+
+```bash
+curl -s -X POST \
+  "http://127.0.0.1:7860/api/v1/run/975f52f6-7883-4543-803c-45bfb9860e72" \
+  -H "x-api-key: sk-ryhzLF-hhKDu23hrKwa_hZ0T0UtjlRdu7m6yUrfXEaM" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input_value": "Bagaimana status order V-6747-09-000?",
+    "output_type": "chat",
+    "input_type": "chat",
+    "tweaks": {}
+  }'
+```
+
+Atau melalui Langflow Playground:
+
+1. Buka **http://localhost:7860**
+2. Pilih flow **"ServiceIQ Customer Agent"**
+3. Klik **Playground**
+4. Ketik pertanyaan, contoh:
+
+```
+Bagaimana status order V-6747-09-000?
+```
+
+Jawaban yang dihasilkan agent berdasarkan data nyata:
+
+```
+Berikut adalah rincian status untuk order V-6747-09-000:
+
+• Nomor Order    : V-6747-09-000
+• Nama Pelanggan : Reza Hendrawan
+• Jenis Layanan  : Verifikasi
+• Laboratorium   : VOLUME
+• Status Order   : Baru (New)
+• Status Inspeksi: Belum Ada Inspeksi (No Inspection)
+• Status SLA     : Melewati Batas Waktu (Overdue)
+```
 
 ---
 
-## 10. Customer Context
+## Contoh Nomor Order di Database
 
-Untuk pertanyaan mengenai pesanan, customer harus diidentifikasi melalui authentication aplikasi.
+| Nomor Order | Status | Pelanggan | Laboratorium | SLA |
+|-------------|--------|-----------|--------------|-----|
+| `V-6747-09-000` | new | Reza Hendrawan | VOLUME | overdue |
+| `V-6739-09-000` | new | PT. Inscal Service Indonesia | SUHU | overdue |
+| `V-6745-09-000` | new | Aldila Fadjar Ramadhan | VOLUME (MASTER METER) | overdue |
+| `V-6737-09-000` | new | PT. Inscal Service Indonesia | GAYA DAN TEKANAN | overdue |
+| `V-22-0051-000` | certified | UPTD Metrologi Kota Tangerang Selatan | MASSA (AT) | overdue |
 
-```text
-JWT
- │
- ▼
-Backend
- │
- └── customer_id
-        │
-        ▼
-     Langflow
-        │
-        ▼
- Database
-```
-
-Jangan meminta customer mengirim `customer_id` secara bebas.
-
-Contoh query:
-
-```sql
-SELECT *
-FROM ai_orders
-WHERE customer_id = :customer_id;
-```
-
-Dengan demikian customer hanya dapat memperoleh data miliknya.
+> Format nomor order: `V-XXXX-XX-XXX` (UUT) atau `DL-25-XXX` (UTTP).  
+> Prefix `ORD-` **tidak ada** di database ini.
 
 ---
 
-## 11. Knowledge Base (Opsional)
+## Ringkasan Perintah Restart
 
-Untuk informasi yang tidak perlu diambil secara real-time, gunakan RAG.
+```bash
+# 1. Backend
+cd /Users/fauzgabriel/development/alur-ai-desktop/backend/api
+DB_HOST=localhost DB_PORT=5432 DB_NAME=siks_n_prd DB_USER=fauzgabriel \
+  ../../.venv/bin/uvicorn app:app --reload
 
-Contoh:
+# 2. Langflow (jika belum berjalan)
+cd /Users/fauzgabriel/langflow
+.venv/bin/python -m langflow run
 
-```text
-FAQ
-Company Profile
-Kebijakan Retur
-Kebijakan Pengiriman
-Panduan Produk
-       │
-       ▼
-Vector Database
-       │
-       ▼
-Langflow Agent
+# 3. Verifikasi
+curl http://127.0.0.1:8000/health
+# → {"status":"ok"}
 ```
-
-Sedangkan:
-
-```text
-Harga
-Stok
-Pesanan
-Transaksi
-Promosi aktif
-```
-
-tetap mengambil data langsung dari database aplikasi.
 
 ---
 
-## 12. Production Checklist
+## Struktur Direktori Penting
 
-Sebelum digunakan secara luas:
-
-* [ ] Database menggunakan user `read-only`
-* [ ] Data sensitif tidak tersedia untuk Agent
-* [ ] Database view khusus AI sudah dibuat
-* [ ] Gemini API Key disimpan sebagai secret/environment variable
-* [ ] Langflow tidak diekspos langsung ke publik
-* [ ] Backend melakukan authentication customer
-* [ ] Customer hanya dapat mengakses datanya sendiri
-* [ ] Query database dibatasi
-* [ ] Logging dan monitoring tersedia
-* [ ] Human handoff tersedia untuk kasus kompleks
+```
+alur-ai-desktop/
+├── .env.example                          # template environment variables
+├── .venv/                                # root virtual environment
+│
+├── backend/
+│   ├── api/
+│   │   ├── app.py                        # entry point: uvicorn app:app
+│   │   └── service_orders.py             # GET /api/ai/service-orders/{order_number}
+│   ├── auth/
+│   │   ├── principal.py                  # Principal + Role
+│   │   └── authorization.py             # IDOR-safe access guard
+│   ├── db/connection.py                  # asyncpg pool (env vars only)
+│   ├── domain/AIServiceOrder.py          # typed domain model
+│   ├── repositories/AIServiceOrderRepository.py  # query layer
+│   ├── tests/                            # 35 unit tests
+│   └── pyproject.toml                    # dependencies
+│
+├── database/
+│   └── views/ai_service_order_summary.sql  # semantic AI view (apply once)
+│
+├── langflow/
+│   ├── flow_id.txt                       # 975f52f6-7883-4543-803c-45bfb9860e72
+│   ├── patch_flow_gemini_v2.py           # setup/fix script: switch LLM ke Gemini
+│   └── fix_tool_endpoints.py             # setup/fix script: fix tool URL endpoints
+│
+└── docs/
+    ├── database/service-order-domain-analysis.md
+    ├── database/service-order-erd.md
+    └── debug/end-to-end-analysis.md      # dokumentasi teknis lengkap
+```
 
 ---
 
-## 13. Hasil Akhir
+## Catatan Keamanan
 
-Dengan implementasi ini, sistem dapat:
-
-```text
-Customer
-   │
-   │ "Berapa harga produk X?"
-   ▼
-AI Customer Service
-   │
-   ▼
-Gemini Flash
-   │
-   ▼
-Langflow Tool
-   │
-   ▼
-Application Database
-   │
-   ▼
-Harga aktual
-   │
-   ▼
-AI Customer Service
-   │
-   ▼
-"Produk X tersedia dengan harga Rp85.000."
-```
-
-Solusi dapat dikembangkan lebih lanjut untuk **multi-user, multi-channel, RAG, rekomendasi produk, pengecekan pesanan, human handoff, CRM/ERP integration, dan multi-tenant enterprise deployment**.
+| # | Catatan |
+|---|---------|
+| ⚠️ | `_decode_token()` di `backend/api/app.py` adalah **stub** — ganti dengan JWT verification nyata sebelum production |
+| ⚠️ | `SERVICEIQ_BEARER_TOKEN` adalah token development — tidak kriptografis |
+| ✅ | Bearer token **tidak pernah** menjadi argumen LLM — disimpan sebagai Credential di Langflow |
+| ✅ | Semua query menggunakan parameterised SQL — tidak ada SQL injection |
+| ✅ | Field sensitif (`password`, `token`, `ktp`, dll.) tidak pernah dikembalikan API |
+| ✅ | IDOR dicegah: otorisasi berdasarkan data record, bukan URL parameter |

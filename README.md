@@ -42,7 +42,7 @@ PostgreSQL — database siks_n_prd        ← data nyata
 ### 1. Clone / masuk ke direktori project
 
 ```bash
-cd /Users/fauzgabriel/development/alur-ai-desktop
+cd PAthToFolder/alur-ai-desktop
 ```
 
 ---
@@ -80,8 +80,8 @@ Isi `.env` sesuai konfigurasi PostgreSQL lokal:
 ```env
 DB_HOST=localhost
 DB_PORT=5432
-DB_NAME=siks_n_prd
-DB_USER=fauzgabriel
+DB_NAME=
+DB_USER=
 DB_PASSWORD=
 ```
 
@@ -94,14 +94,14 @@ DB_PASSWORD=
 View ini adalah satu-satunya jalur baca data yang digunakan AI layer.
 
 ```bash
-psql -h localhost -p 5432 -U fauzgabriel -d siks_n_prd \
+psql -h localhost -p 5432 -U username -d dbname \
   -f database/views/ai_service_order_summary.sql
 ```
 
 Verifikasi view berhasil dibuat:
 
 ```bash
-psql -h localhost -p 5432 -U fauzgabriel -d siks_n_prd \
+psql -h localhost -p 5432 -U username -d dbname \
   -c "SELECT order_number, order_status, customer_name FROM ai_service_order_summary LIMIT 3;"
 ```
 
@@ -157,7 +157,7 @@ python3 langflow/fix_tool_endpoints.py
 
 ```bash
 cd backend/api
-DB_HOST=localhost DB_PORT=5432 DB_NAME=siks_n_prd DB_USER=fauzgabriel \
+DB_HOST=localhost DB_PORT=5432 DB_NAME=dbname DB_USER=username \
   ../../.venv/bin/uvicorn app:app --reload
 ```
 
@@ -176,7 +176,7 @@ Backend berjalan di: **http://127.0.0.1:8000**
 
 ```bash
 cd backend
-DB_HOST=localhost DB_PORT=5432 DB_NAME=siks_n_prd DB_USER=fauzgabriel \
+DB_HOST=localhost DB_PORT=5432 DB_NAME=dbname DB_USER=username \
   uv run pytest tests/ -q
 # → 35 passed
 ```
@@ -289,12 +289,12 @@ Berikut adalah rincian status untuk order V-6747-09-000:
 
 ```bash
 # 1. Backend
-cd /Users/fauzgabriel/development/alur-ai-desktop/backend/api
-DB_HOST=localhost DB_PORT=5432 DB_NAME=siks_n_prd DB_USER=fauzgabriel \
+cd PathToFolder/alur-ai-desktop/backend/api
+DB_HOST=localhost DB_PORT=5432 DB_NAME=dbname DB_USER=username \
   ../../.venv/bin/uvicorn app:app --reload
 
 # 2. Langflow (jika belum berjalan)
-cd /Users/fauzgabriel/langflow
+cd PathToLAngFlow/langflow
 .venv/bin/python -m langflow run
 
 # 3. Verifikasi

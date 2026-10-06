@@ -28,8 +28,22 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from contextlib import asynccontextmanager
 from typing import Any, Callable
+
+# ---------------------------------------------------------------------------
+# Path bootstrap
+# ---------------------------------------------------------------------------
+# When this file is loaded directly (e.g. ``uvicorn app:app`` from backend/api/)
+# the project root is not on sys.path and ``from backend.api...`` would fail.
+# Inserting the project root (two levels up from this file) fixes that without
+# requiring the caller to set PYTHONPATH manually.
+# ---------------------------------------------------------------------------
+_here = os.path.dirname(os.path.abspath(__file__))          # .../backend/api
+_project_root = os.path.dirname(os.path.dirname(_here))     # project root
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -181,3 +195,21 @@ def create_app(db_pool: Any = None) -> Starlette:
         app = Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
 
     return app
+
+
+# ---------------------------------------------------------------------------
+# Module-level application instance
+# ---------------------------------------------------------------------------
+# Exposes a pre-built ``app`` object so uvicorn can be pointed at this module
+# in two equivalent ways:
+#
+#   From the project root (recommended):
+#     PYTHONPATH=. uvicorn backend.api.app:create_app --factory
+#
+#   From backend/api/ (simple, no PYTHONPATH needed):
+#     uvicorn app:app --reload
+#
+# The factory path is preferred in production (pool initialised via lifespan).
+# The module-level ``app`` uses the same production path.
+# ---------------------------------------------------------------------------
+app = create_app()
